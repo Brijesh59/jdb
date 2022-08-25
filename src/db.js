@@ -1,5 +1,6 @@
 import pkg from "pg";
 import { fetchSTPData } from "./api.js";
+import { roundToTwoDecimalPlaces, getPreviousDate } from "./helpers.js";
 
 const { Client } = pkg;
 
@@ -45,7 +46,7 @@ export class Database {
   static async addSTPData() {
     console.log("\n" + "-------------------------------");
     console.log(
-      "RUNNING AT:",
+      "RUNNING addSTPData AT:",
       new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString()
     );
     console.log("-------------------------------" + "\n");
@@ -97,5 +98,108 @@ export class Database {
         console.log(err.message);
       }
     }
+  }
+
+  static async addSTPCalcData() {
+    console.log("\n" + "-------------------------------");
+    console.log(
+      "RUNNING addSTPCalcData AT:",
+      new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString()
+    );
+    console.log("-------------------------------" + "\n");
+
+    const client = Database.client;
+
+    const query = {
+      text: `
+        SELECT stp_id, CAST(DATE(timestamp) AS varchar), timestamp, sd.created_at, flow, bod, temperature, nh4, cod, ph, tss 
+        FROM stp_data sd
+        GROUP BY stp_id, timestamp, sd.created_at, flow, bod, temperature, nh4, cod, ph, tss
+        HAVING DATE(timestamp) = $1
+        ORDER BY stp_id, timestamp ASC
+      `,
+      values: [getPreviousDate()],
+    };
+
+    let data = await client
+      .query(query)
+      .catch((err) => console.log(err.message));
+
+    data = data?.rows;
+
+    if (!data || data.length === 0) return;
+
+    const avgData = {};
+
+    // ADD
+    data.forEach((stp_data) => {
+      if (avgData[stp_data.stp_id]) {
+        // UPDATE THE DATA
+        avgData[stp_data.stp_id]["count"] += 1;
+        avgData[stp_data.stp_id]["avg_flow"] += stp_data.flow || 0;
+        avgData[stp_data.stp_id]["avg_bod"] += stp_data.bod || 0;
+        avgData[stp_data.stp_id]["avg_temperature"] +=
+          stp_data.temperature || 0;
+        avgData[stp_data.stp_id]["avg_nh4"] += stp_data.nh4 || 0;
+        avgData[stp_data.stp_id]["avg_cod"] += stp_data.cod || 0;
+        avgData[stp_data.stp_id]["avg_ph"] += stp_data.ph || 0;
+        avgData[stp_data.stp_id]["avg_tss"] += stp_data.tss || 0;
+      } else {
+        // ADD THE DATA
+        avgData[stp_data.stp_id] = {
+          count: 1,
+          stp_id: stp_data.stp_id,
+          date: stp_data.date,
+          avg_flow: stp_data?.flow || 0,
+          avg_bod: stp_data?.bod || 0,
+          avg_temperature: stp_data?.temperature || 0,
+          avg_nh4: stp_data?.nh4 || 0,
+          avg_cod: stp_data?.cod || 0,
+          avg_ph: stp_data?.ph || 0,
+          avg_tss: stp_data?.tss || 0,
+        };
+      }
+    });
+
+    // AVG
+    for (let key in avgData) {
+      const count = avgData[key]["count"];
+      avgData[key]["avg_flow"] = avgData[key]["avg_flow"] / count;
+      avgData[key]["avg_bod"] = avgData[key]["avg_bod"] / count;
+      avgData[key]["avg_temperature"] = avgData[key]["avg_temperature"] / count;
+      avgData[key]["avg_nh4"] = avgData[key]["avg_nh4"] / count;
+      avgData[key]["avg_cod"] = avgData[key]["avg_cod"] / count;
+      avgData[key]["avg_ph"] = avgData[key]["avg_ph"] / count;
+      avgData[key]["avg_tss"] = avgData[key]["avg_tss"] / count;
+    }
+
+    const dataArr = Object.values(avgData).map((dataEle) => ({
+      stp_id: dataEle.stp_id,
+      date: dataEle.date,
+      sewage_treated:
+        roundToTwoDecimalPlaces(dataEle.avg_flow) * 24 * 1000 * 0.264172, // in gallons
+      avg_bod: roundToTwoDecimalPlaces(dataEle.avg_bod),
+      avg_temperature: roundToTwoDecimalPlaces(dataEle.avg_temperature),
+      avg_nh4: roundToTwoDecimalPlaces(dataEle.avg_nh4),
+      avg_cod: roundToTwoDecimalPlaces(dataEle.avg_cod),
+      avg_ph: roundToTwoDecimalPlaces(dataEle.avg_ph),
+      avg_tss: roundToTwoDecimalPlaces(dataEle.avg_tss),
+    }));
+
+    const insertQuery = {
+      text: `
+      INSERT INTO stp_data_calc
+        (stp_id, date, sewage_treated, avg_bod, avg_temperature, avg_nh4, avg_cod, avg_ph, avg_tss)
+      VALUES
+        ${dataArr
+          .map((d) => {
+            return `(${d.stp_id}, '${d.date}', ${d.sewage_treated}, ${d.avg_bod}, ${d.avg_temperature}, ${d.avg_nh4}, ${d.avg_cod}, ${d.avg_ph}, ${d.avg_tss})`;
+          })
+          .join(",")}
+      `,
+      values: [],
+    };
+
+    await client.query(insertQuery).catch((err) => console.log(err.message));
   }
 }

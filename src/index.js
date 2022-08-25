@@ -17,6 +17,11 @@ const startApplication = async () => {
   cron.schedule(`*/${runEvery} * * * *`, () => {
     db.addSTPData();
   });
+
+  // CALCULATE AVG. OF EVERYDAYS DATA AT 1:00 AM DAILY
+  cron.schedule(`0 1 * * *`, () => {
+    db.addSTPCalcData();
+  });
 };
 
 startApplication();
